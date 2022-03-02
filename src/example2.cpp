@@ -63,7 +63,7 @@ void device_change_callback(DeviceSummary info, DeviceActionType action)
 int main(int argc, char *argv[])
 {
     //set_input_event_callback(event_callback);
-    //set_device_change_callback(device_change_callback);
+    set_device_change_callback(device_change_callback);
     init();
 
     for(size_t i=0; i<get_device_count(); ++i)
@@ -75,7 +75,7 @@ int main(int argc, char *argv[])
     while(true)
     {
         // Print current state of each device
-        /*
+        
         for(auto const& entry : g_device_info)
         {
             auto info = entry.second;
@@ -88,21 +88,21 @@ int main(int argc, char *argv[])
             std::stringstream s2(">");
             for(size_t i=0; i<info.axis_count; ++i)
             {
-                s1 << fmt::format("    A {:d}", info.axis_data[i].axis_index);
+                s1 << fmt::format("    A {:d}", info.axis_map[i].axis_index);
                 s2 << fmt::format(
                     " {: 6d}",
-                    get_axis(info.device_guid, info.axis_data[i].axis_index)
+                    get_axis(info.device_guid, info.axis_map[i].axis_index)
                 );
             }
             std::cout << s1.str() << std::endl;
             std::cout << s2.str() << std::endl;
         }
-        */
+        
 
         /*
         for(size_t i=0; i<get_device_count(); ++i)
         {
-            auto info = get_device_information(i);
+            auto info = get_device_information_by_index(i);
             std::cout << fmt::format(
                 "{:30s} {} a={:d} b={:d} h={:d}",
                 info.name,
@@ -115,7 +115,7 @@ int main(int argc, char *argv[])
         std::cout << "-------------" << std::endl;
         */
         
-        SleepEx(5000, 0);
+        SleepEx(1000, 0);
     }
 
     return 0;
