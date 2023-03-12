@@ -18,3 +18,6 @@ target_link_libraries( example dill )
 
 add_executable( example2 src/example2.cpp )
 target_link_libraries( example2 dill )
+
+add_executable( example3 src/example3.cpp )
+target_link_libraries( example3 dill )
