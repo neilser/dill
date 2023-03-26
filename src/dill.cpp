@@ -1,3 +1,6 @@
+
+// TODO: xxx I think I need to call CoInitializeEx() in every thread...
+
 #include "dill.h"
 
 #include <atomic>
@@ -10,11 +13,37 @@
 #include "spdlog/sinks/stdout_color_sinks.h" 
 #include "spdlog/sinks/basic_file_sink.h"
 
+#if (_WIN32_WINNT >= 0x0602 /*_WIN32_WINNT_WIN8*/)
+#include <XInput.h>
+#pragma comment(lib,"xinput.lib")
+#else
+#include <XInput.h>
+#pragma comment(lib,"xinput9_1_0.lib")
+#endif
 
 #define HID_CLASSGUID {0x4d1e55b2, 0xf16f, 0x11cf,{ 0x88, 0xcb, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30}}
 #define CLS_NAME TEXT("GremlinInputListener")
 #define HWND_MESSAGE ((HWND)-3)
 
+struct XINPUT_CONTROLLER_STATE
+{
+    XINPUT_STATE state;
+    bool bConnected;
+    WORD VID;
+    WORD PID;
+};
+
+struct XINPUT_VIDPID
+{
+    WORD VID;
+    WORD PID;
+};
+
+
+XINPUT_CONTROLLER_STATE g_XInputControllers[XUSER_MAX_COUNT];
+XINPUT_VIDPID g_XInputVIDPID[XUSER_MAX_COUNT]; // Current code can't link numbered XInput devices to VID/PID, so store VID/PID separately
+bool g_bXInputPresent;
+BYTE g_numXInputFound;
 
 namespace spd = spdlog;
 
@@ -791,6 +820,53 @@ BOOL CALLBACK handle_device_cb(LPCDIDEVICEINSTANCE instance, LPVOID data)
     return DIENUM_CONTINUE;
 }
 
+void find_xinput_devices()
+{
+    // Check all input devices and record the VID and PID for any which have the signature indicating that they are XInput
+    UINT numRawDevices = 0;
+    // Info for connected XInput devices will be rebuilt each time we call this function
+    g_numXInputFound = 0;
+    for (UINT i = 0; i < XUSER_MAX_COUNT; i++)
+    {
+        g_XInputVIDPID[i].VID = 0;
+        g_XInputVIDPID[i].PID = 0;
+    }
+    // First, get just the number of raw input devices:
+    volatile UINT result = GetRawInputDeviceList(nullptr, &numRawDevices, sizeof(RAWINPUTDEVICELIST));
+    if (numRawDevices > 0) {
+        numRawDevices++; // in case another device has just been plugged in
+        std::unique_ptr<RAWINPUTDEVICELIST[]> device_list(new RAWINPUTDEVICELIST[numRawDevices]);
+        result = GetRawInputDeviceList(device_list.get(), &numRawDevices, sizeof(RAWINPUTDEVICELIST));
+        numRawDevices = result;
+        for (UINT i = 0; i < numRawDevices; i++) {
+            if (device_list[i].dwType == RIM_TYPEHID) {
+                // Want to fetch the device name and check it for "IG_"
+                UINT namelen = 0;
+                // Get the name length:
+                result = GetRawInputDeviceInfo(device_list[i].hDevice, RIDI_DEVICENAME, nullptr, &namelen);
+                // And get the name itself:
+                std::unique_ptr<char[]> device_name(new char[namelen]);
+                result = GetRawInputDeviceInfo(device_list[i].hDevice, RIDI_DEVICENAME, device_name.get(), &namelen);
+                // Check for IG_ in name
+                if (strstr(device_name.get(), "IG_"))
+                {
+                    // Found IG_, so fetch and store the VID and PID...
+                    OutputDebugString("Found it!\n");
+                    // Get the device info:
+                    RID_DEVICE_INFO device_info;
+                    UINT devinfolen = sizeof(RID_DEVICE_INFO);
+                    result = GetRawInputDeviceInfo(device_list[i].hDevice, RIDI_DEVICEINFO, &device_info, &devinfolen);
+                    if (result > 0) {
+                        g_XInputVIDPID[g_numXInputFound].VID = (WORD) device_info.hid.dwVendorId;
+                        g_XInputVIDPID[g_numXInputFound].PID = (WORD) device_info.hid.dwProductId;
+                        g_numXInputFound++;
+                    }
+                }
+            }
+        }
+    }
+}
+
 void enumerate_devices()
 {
     g_initialization_done = false;
@@ -815,6 +891,11 @@ void enumerate_devices()
             throw std::runtime_error("Failed registering with DirectInput");
         }
     }
+
+    // Update the list of XInput devices so we can ignore them:
+    // TODO: I think I need to check presence of XInput every time we enumerate devices, not just if init() found any
+    if (g_bXInputPresent)
+        find_xinput_devices();
 
     std::unordered_map<GUID, bool> current_devices;
     auto result = g_direct_input->EnumDevices(
@@ -880,7 +961,34 @@ BOOL init()
 {
     g_initialization_done = false;
     logger->info("Initializing DILL v1.3");
+
+    // Initialize COM
+    // TODO: may have to consider getting the client code to call CoUninitialize() since no place here in dill to do it
+    // (unless one is added of course) so perhaps CoInitializeEx() belongs in the client code too?
+    // TODO: could be rrealllly tidy and decode the errors from CoInitializeEx()
+    HRESULT hr;
+    if (FAILED(hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED)))
+        logger->error("CoInitializeEx error {}", hr);
     
+    // Check if any XInput devices are connected
+    // TODO: shouldn't this check be part of the enumerate() stuff, since the answer can change? (if it's needed at all)
+    g_bXInputPresent = false;
+    DWORD dwResult;
+    for (DWORD i = 0; i < XUSER_MAX_COUNT; i++)
+    {
+        // Call XInputGetState and check if it succeeds; if yes that controller is connected
+        dwResult = XInputGetState(i, &g_XInputControllers[i].state);
+
+        if (dwResult == ERROR_SUCCESS)
+        {
+            g_XInputControllers[i].bConnected = true;
+            g_bXInputPresent = true;
+            logger->info("Found XInput device {}", i);
+        }
+        else
+            g_XInputControllers[i].bConnected = false;
+    }
+
     // Force an update of device enumeration to bootstrap everything
     enumerate_devices();
 
